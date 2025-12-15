@@ -28,7 +28,7 @@ from aiogram.client.default import DefaultBotProperties
 # =========================
 
 # 👉 СЮДА ВСТАВЬ СВОЙ РЕАЛЬНЫЙ ТОКЕН В КАВЫЧКАХ
-BOT_TOKEN = "8319599095:AAElJnwHzKt1wZlRSXAxFJ8-QK4015iRsTg"
+BOT_TOKEN = "8319599095:AAG_Rv0wmig-sRa76v7Annq6_pU841vvFhc"
 
 # 👉 ID твоего закрытого канала "Заявки Firenze Buyer Studio"
 CHANNEL_ID = -1003650413645
