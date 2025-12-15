@@ -13,6 +13,7 @@ Telegram-бот для заявок Firenze Buyer Studio.
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -28,7 +29,10 @@ from aiogram.client.default import DefaultBotProperties
 # =========================
 
 # 👉 СЮДА ВСТАВЬ СВОЙ РЕАЛЬНЫЙ ТОКЕН В КАВЫЧКАХ
-BOT_TOKEN = "8319599095:AAG_Rv0wmig-sRa76v7Annq6_pU841vvFhc"
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN not set! Please add it to environment variables.")
 
 # 👉 ID твоего закрытого канала "Заявки Firenze Buyer Studio"
 CHANNEL_ID = -1003650413645
@@ -321,10 +325,11 @@ async def fallback(message: types.Message, state: FSMContext):
 
 async def main():
     global bot
-    if BOT_TOKEN == "PASTE_YOUR_NEW_TOKEN_HERE":
-        raise SystemExit("❌ Пожалуйста, вставьте ваш реальный токен в переменную BOT_TOKEN!")
 
-    print("🚀 Запускаю бота...")  # чтобы ты видела, что main реально выполняется
+    if not BOT_TOKEN:
+        raise SystemExit("❌ BOT_TOKEN not set! Please add it to environment variables.")
+
+    print("🚀 Запускаю бота...")
 
     bot = Bot(
         token=BOT_TOKEN,
@@ -332,7 +337,3 @@ async def main():
     )
 
     await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
