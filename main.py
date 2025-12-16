@@ -228,7 +228,7 @@ async def process_options(message: types.Message, state: FSMContext):
 
     await state.set_state(Form.budget)
     msg = (
-        "3️⃣ Хотите указать <b>бюджет</b>? Можно написать сумму или диапазон.\n"
+        "3️⃣ Хотите указать <b>бюджет</b>? Можно написать сумму или диапазон (миниум от 20 €).\n"
         "Например: до 500 € или 300–400 €.\n\n"
         "Если не хотите указывать — напишите или нажмите «Пропустить»."
     )
@@ -254,7 +254,7 @@ async def process_budget(message: types.Message, state: FSMContext):
     await state.set_state(Form.city)
     msg = (
         "4️⃣ В какой <b>город</b> нужна доставка?\n"
-        "Если важно — укажите, предпочитаете личную встречу или курьера."
+        "Если важно — укажите, предпочитаете самовывоз (только из Москвы) или сервис доставки."
     )
     await message.answer(msg, reply_markup=types.ReplyKeyboardRemove())
 
