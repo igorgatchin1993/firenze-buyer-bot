@@ -3,32 +3,34 @@
 
 """
 Telegram-бот для заявок Firenze Buyer Studio.
-Версия под aiogram 3 и Python 3.12.
+Версия под aiogram 3 и Python 3.12+
 
 ФУНКЦИИ:
 - Собирает заявку по шагам.
 - Шаги 2 и 3 (размер/цвет и бюджет) можно пропустить.
 - Отправляет готовую заявку в закрытый канал (ID канала см. ниже).
+- Для Railway: поднимает health-сервер на динамическом PORT (/health), чтобы сервис считался "живым".
+- Подробные логи в stdout (видно в Railway Logs).
 """
 
 import asyncio
 import logging
 import os
+import sys
 
-from aiogram import Bot, Dispatcher, F, types
+from aiohttp import web
+
+from aiogram import Bot, Dispatcher, F, types, Router
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command, CommandStart, StateFilter
-from aiogram import Router
 from aiogram.client.default import DefaultBotProperties
 
 # =========================
 # 1. НАСТРОЙКИ
 # =========================
-
-# 👉 СЮДА ВСТАВЬ СВОЙ РЕАЛЬНЫЙ ТОКЕН В КАВЫЧКАХ
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -37,13 +39,22 @@ if not BOT_TOKEN:
 # 👉 ID твоего закрытого канала "Заявки Firenze Buyer Studio"
 CHANNEL_ID = -1003650413645
 
-logging.basicConfig(level=logging.INFO)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("firenze-bot")
 
 # Dispatcher + storage + router
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
+
+# Глобальный bot (инициализируем в main)
+bot: Bot
 
 
 # =========================
@@ -63,46 +74,66 @@ class Form(StatesGroup):
 # =========================
 
 def start_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📝 Оформить заявку")]
-        ],
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📝 Оформить заявку")]],
         resize_keyboard=True
     )
-    return kb
-
 
 
 def skip_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Пропустить")]
-        ],
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="Пропустить")]],
         resize_keyboard=True
     )
-    return kb
 
 
 def new_request_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📝 Оформить ещё одну заявку")]
-        ],
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="📝 Оформить ещё одну заявку")]],
         resize_keyboard=True
     )
-    return kb
 
 
 # =========================
-# 4. ОБРАБОТЧИКИ КОМАНД
+# 4. HEALTH SERVER (Railway PORT)
+# =========================
+
+async def start_health_server() -> web.AppRunner:
+    """
+    Мини-сервер для Railway: слушает PORT и отвечает /health.
+    Не мешает aiogram polling.
+    """
+    port = int(os.getenv("PORT", "8080"))
+    app = web.Application()
+
+    async def health(request):
+        return web.json_response({"status": "ok"})
+
+    app.router.add_get("/health", health)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=port)
+    await site.start()
+
+    logger.info("Health server listening on 0.0.0.0:%s (GET /health)", port)
+    return runner
+
+
+# =========================
+# 5. ОБРАБОТЧИКИ КОМАНД
 # =========================
 
 @router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
-    """
-    Приветствие и предложение начать заявку.
-    """
     await state.clear()
+
+    logger.info(
+        "CMD /start from user_id=%s username=%s",
+        message.from_user.id,
+        message.from_user.username
+    )
+
     text = (
         "Привет! 👋\n"
         "Я бот Анастасии, байера из Италии.\n\n"
@@ -114,6 +145,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
+    logger.info("CMD /help from user_id=%s", message.from_user.id)
     await message.answer(
         "Я помогаю оформить заявку на покупку товара из Италии.\n"
         "Нажмите /start, чтобы начать."
@@ -122,9 +154,8 @@ async def cmd_help(message: types.Message):
 
 @router.message(F.text.contains("Оформить"))
 async def start_form(message: types.Message, state: FSMContext):
-    """
-    Начинаем анкету.
-    """
+    logger.info("Start form from user_id=%s", message.from_user.id)
+
     await state.set_state(Form.product)
     text = (
         "1️⃣ Пришлите, пожалуйста, <b>фото, ссылку или описание товара</b>, "
@@ -136,9 +167,7 @@ async def start_form(message: types.Message, state: FSMContext):
 
 @router.message(Command("cancel"), StateFilter("*"))
 async def cmd_cancel(message: types.Message, state: FSMContext):
-    """
-    Отмена анкеты.
-    """
+    logger.info("CMD /cancel from user_id=%s state=%s", message.from_user.id, await state.get_state())
     await state.clear()
     await message.answer(
         "Заявка отменена. Если хотите начать заново — нажмите кнопку ниже.",
@@ -147,16 +176,19 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 5. ШАГ 1 — ТОВАР (ОБЯЗАТЕЛЬНО)
+# 6. ШАГ 1 — ТОВАР (ОБЯЗАТЕЛЬНО)
 # =========================
 
 @router.message(StateFilter(Form.product), F.content_type.in_(
     [types.ContentType.PHOTO, types.ContentType.TEXT]
 ))
 async def process_product(message: types.Message, state: FSMContext):
-    """
-    Сохраняем информацию о товаре: фото или текст.
-    """
+    logger.info(
+        "Step 1 (product) from user_id=%s content_type=%s",
+        message.from_user.id,
+        message.content_type
+    )
+
     data = {}
 
     if message.photo:
@@ -179,12 +211,13 @@ async def process_product(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 6. ШАГ 2 — РАЗМЕР/ЦВЕТ (МОЖНО ПРОПУСТИТЬ)
+# 7. ШАГ 2 — РАЗМЕР/ЦВЕТ (МОЖНО ПРОПУСТИТЬ)
 # =========================
 
 @router.message(StateFilter(Form.options), F.text)
 async def process_options(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
+    logger.info("Step 2 (options) from user_id=%s text=%s", message.from_user.id, text[:120])
 
     if text.lower() == "пропустить":
         options = "Не указано"
@@ -203,12 +236,13 @@ async def process_options(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 7. ШАГ 3 — БЮДЖЕТ (МОЖНО ПРОПУСТИТЬ)
+# 8. ШАГ 3 — БЮДЖЕТ (МОЖНО ПРОПУСТИТЬ)
 # =========================
 
 @router.message(StateFilter(Form.budget), F.text)
 async def process_budget(message: types.Message, state: FSMContext):
     text = (message.text or "").strip()
+    logger.info("Step 3 (budget) from user_id=%s text=%s", message.from_user.id, text[:120])
 
     if text.lower() == "пропустить":
         budget = "Не указан"
@@ -226,12 +260,14 @@ async def process_budget(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 8. ШАГ 4 — ГОРОД (ОБЯЗАТЕЛЬНО)
+# 9. ШАГ 4 — ГОРОД (ОБЯЗАТЕЛЬНО)
 # =========================
 
 @router.message(StateFilter(Form.city), F.text)
 async def process_city(message: types.Message, state: FSMContext):
     city_delivery = (message.text or "").strip() or "(не указано)"
+    logger.info("Step 4 (city) from user_id=%s city=%s", message.from_user.id, city_delivery[:120])
+
     await state.update_data(city_delivery=city_delivery)
 
     await state.set_state(Form.contact)
@@ -243,12 +279,14 @@ async def process_city(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 9. ШАГ 5 — КОНТАКТ + ОТПРАВКА ЗАЯВКИ
+# 10. ШАГ 5 — КОНТАКТ + ОТПРАВКА ЗАЯВКИ
 # =========================
 
 @router.message(StateFilter(Form.contact), F.text)
 async def process_contact(message: types.Message, state: FSMContext):
     contact = (message.text or "").strip() or "(не указан)"
+    logger.info("Step 5 (contact) from user_id=%s contact=%s", message.from_user.id, contact[:120])
+
     await state.update_data(contact=contact)
 
     data = await state.get_data()
@@ -275,22 +313,26 @@ async def process_contact(message: types.Message, state: FSMContext):
 
     try:
         if product_photo_id:
+            logger.info("Sending application to channel (photo) user_id=%s", user.id)
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
                 photo=product_photo_id,
                 caption=application_text
             )
         else:
+            logger.info("Sending application to channel (text) user_id=%s", user.id)
             await bot.send_message(
                 chat_id=CHANNEL_ID,
                 text=application_text
             )
-    except Exception as e:
-        logging.error(f"Ошибка при отправке заявки в канал: {e}")
+        logger.info("Application sent successfully user_id=%s", user.id)
+    except Exception:
+        logger.exception("Ошибка при отправке заявки в канал user_id=%s", user.id)
         await message.answer(
             "⚠️ Произошла ошибка при отправке заявки в канал. "
             "Сообщите, пожалуйста, Анастасии."
         )
+        return
 
     await message.answer(
         "Спасибо! 💛\n"
@@ -301,12 +343,17 @@ async def process_contact(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 10. ФОЛБЭК — ЛЮБОЙ ДРУГОЙ ТЕКСТ
+# 11. ФОЛБЭК — ЛЮБОЙ ДРУГОЙ ТЕКСТ
 # =========================
 
 @router.message()
 async def fallback(message: types.Message, state: FSMContext):
     current_state = await state.get_state()
+    logger.info("Fallback from user_id=%s state=%s text=%s",
+                message.from_user.id,
+                current_state,
+                (message.text or "")[:120])
+
     if current_state is None:
         await message.answer(
             "Чтобы оформить заявку, нажмите кнопку ниже или введите /start.",
@@ -320,20 +367,53 @@ async def fallback(message: types.Message, state: FSMContext):
 
 
 # =========================
-# 11. ЗАПУСК БОТА
+# 12. ЗАПУСК БОТА
 # =========================
 
 async def main():
     global bot
 
-    if not BOT_TOKEN:
-        raise SystemExit("❌ BOT_TOKEN not set! Please add it to environment variables.")
+    logger.info("🚀 Starting Firenze Buyer Studio bot...")
+    logger.info("Python: %s", sys.version.replace("\n", " "))
+    logger.info(
+        "ENV: PORT=%s LOG_LEVEL=%s BOT_TOKEN=%s",
+        os.getenv("PORT"),
+        os.getenv("LOG_LEVEL"),
+        "SET" if os.getenv("BOT_TOKEN") else "MISSING"
+    )
 
-    print("🚀 Запускаю бота...")
+    if not BOT_TOKEN:
+        logger.critical("❌ BOT_TOKEN not set! Please add it to environment variables.")
+        raise SystemExit(1)
 
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode="HTML")
     )
 
-    await dp.start_polling(bot)
+    # Health server (Railway-friendly)
+    health_runner = await start_health_server()
+
+    try:
+        logger.info("✅ Bot initialized. Starting polling...")
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    except Exception:
+        logger.exception("💥 Fatal error while polling")
+        raise
+    finally:
+        logger.info("🧹 Shutting down...")
+        try:
+            await health_runner.cleanup()
+        except Exception:
+            logger.exception("Health server cleanup failed")
+        try:
+            await bot.session.close()
+        except Exception:
+            logger.exception("Bot session close failed")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
